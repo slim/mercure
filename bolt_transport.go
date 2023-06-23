@@ -116,16 +116,12 @@ func (t *BoltTransport) Dispatch(update *Update) error {
 	}
 
 	AssignUUID(update)
-	updateJSON, err := json.Marshal(*update)
-	if err != nil {
-		return fmt.Errorf("error when marshaling update: %w", err)
-	}
 
 	// We cannot use RLock() because Bolt allows only one read-write transaction at a time
 	t.Lock()
 	defer t.Unlock()
 
-	if err := t.persist(update.ID, updateJSON); err != nil {
+	if err := t.persist(update); err != nil {
 		return err
 	}
 
@@ -137,7 +133,12 @@ func (t *BoltTransport) Dispatch(update *Update) error {
 }
 
 // persist stores update in the database.
-func (t *BoltTransport) persist(updateID string, updateJSON []byte) error {
+func (t *BoltTransport) persist(update *Update) error {
+	updateJSON, err := json.Marshal(*update)
+	if err != nil {
+		return fmt.Errorf("error when marshaling update: %w", err)
+	}
+
 	if err := t.db.Update(func(tx *bolt.Tx) error {
 		bucket, err := tx.CreateBucketIfNotExists([]byte(t.bucketName))
 		if err != nil {
@@ -152,13 +153,13 @@ func (t *BoltTransport) persist(updateID string, updateJSON []byte) error {
 		binary.BigEndian.PutUint64(prefix, seq)
 
 		// The sequence value is prepended to the update id to create an ordered list
-		key := bytes.Join([][]byte{prefix, []byte(updateID)}, []byte{})
+		key := bytes.Join([][]byte{prefix, []byte(update.ID)}, []byte{})
 
 		// The DB is append only
 		bucket.FillPercent = 1
 
 		t.lastSeq = seq
-		t.lastEventID = updateID
+		t.lastEventID = update.ID
 		if err := bucket.Put(key, updateJSON); err != nil {
 			return fmt.Errorf("unable to put value in Bolt DB: %w", err)
 		}
