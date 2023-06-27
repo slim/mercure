@@ -220,26 +220,15 @@ func (t *BoltTransport) GetSubscribers() (string, []*Subscriber, error) {
 //nolint:gocognit
 func (t *BoltTransport) dispatchHistory(s *Subscriber, toSeq uint64) {
 	t.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(t.bucketName))
-		if b == nil {
+		c, err := cursorSeek(tx, t.bucketName, s)
+		if err != nil {
 			s.HistoryDispatched(EarliestLastEventID)
 
 			return nil // No data
 		}
 
-		c := b.Cursor()
 		responseLastEventID := EarliestLastEventID
-		afterFromID := s.RequestLastEventID == EarliestLastEventID
-		for k, v := c.First(); k != nil; k, v = c.Next() {
-			if !afterFromID {
-				responseLastEventID = string(k[8:])
-				if responseLastEventID == s.RequestLastEventID {
-					afterFromID = true
-				}
-
-				continue
-			}
-
+		for k, v := c.Next(); k != nil; k, v = c.Next() {
 			var update *Update
 			if err := json.Unmarshal(v, &update); err != nil {
 				s.HistoryDispatched(responseLastEventID)
@@ -255,9 +244,10 @@ func (t *BoltTransport) dispatchHistory(s *Subscriber, toSeq uint64) {
 
 				return nil
 			}
+			responseLastEventID = update.ID
 		}
 		s.HistoryDispatched(responseLastEventID)
-		if !afterFromID {
+		if responseLastEventID == EarliestLastEventID {
 			if c := t.logger.Check(zap.InfoLevel, "Can't find requested LastEventID"); c != nil {
 				c.Write(zap.String("LastEventID", s.RequestLastEventID))
 			}
@@ -312,6 +302,19 @@ func (t *BoltTransport) cleanup(bucket *bolt.Bucket, lastID uint64) error {
 	}
 
 	return nil
+}
+
+func cursorSeek(tx *bolt.Tx, bucketName string, s *Subscriber) (c *bolt.Cursor, err error) {
+	b := tx.Bucket([]byte(bucketName))
+	if b == nil {
+		return nil, fmt.Errorf("no data in bucket %s", bucketName)
+	}
+
+	c = b.Cursor()
+	for k, _ := c.First(); k != nil && string(k[8:]) != s.RequestLastEventID; k, _ = c.Next() {
+	}
+	return
+
 }
 
 // Interface guards.
