@@ -227,8 +227,27 @@ func (t *BoltTransport) dispatchHistory(s *Subscriber, toSeq uint64) {
 			return nil // No data
 		}
 
+		var (
+			k []byte
+			v []byte
+		)
+
+		if s.RequestLastEventID == EarliestLastEventID {
+			k, v = c.First()
+		} else {
+			k, v = c.Next()
+			if k == nil {
+				if c := t.logger.Check(zap.InfoLevel, "Can't find requested LastEventID"); c != nil {
+					c.Write(zap.String("LastEventID", s.RequestLastEventID))
+				}
+
+				s.HistoryDispatched(t.lastEventID)
+				return nil
+			}
+		}
+
 		responseLastEventID := EarliestLastEventID
-		for k, v := c.Next(); k != nil; k, v = c.Next() {
+		for k != nil {
 			var update *Update
 			if err := json.Unmarshal(v, &update); err != nil {
 				s.HistoryDispatched(responseLastEventID)
@@ -245,13 +264,9 @@ func (t *BoltTransport) dispatchHistory(s *Subscriber, toSeq uint64) {
 				return nil
 			}
 			responseLastEventID = update.ID
+			k, v = c.Next()
 		}
 		s.HistoryDispatched(responseLastEventID)
-		if responseLastEventID == EarliestLastEventID {
-			if c := t.logger.Check(zap.InfoLevel, "Can't find requested LastEventID"); c != nil {
-				c.Write(zap.String("LastEventID", s.RequestLastEventID))
-			}
-		}
 
 		return nil
 	})
