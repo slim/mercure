@@ -222,7 +222,17 @@ func (t *BoltTransport) dispatchHistory(s *Subscriber, toSeq uint64) {
 	t.db.View(func(tx *bolt.Tx) error {
 		c, err := cursorSeek(tx, t.bucketName, s)
 		if err != nil {
-			s.HistoryDispatched(EarliestLastEventID)
+			switch err {
+			case ErrNoData:
+				s.HistoryDispatched(EarliestLastEventID)
+				break
+			case ErrIDNotFound:
+				if c := t.logger.Check(zap.InfoLevel, "Can't find requested LastEventID"); c != nil {
+					c.Write(zap.String("LastEventID", s.RequestLastEventID))
+				}
+
+				s.HistoryDispatched(t.lastEventID)
+			}
 
 			return nil // No data
 		}
@@ -236,14 +246,6 @@ func (t *BoltTransport) dispatchHistory(s *Subscriber, toSeq uint64) {
 			k, v = c.First()
 		} else {
 			k, v = c.Next()
-			if k == nil {
-				if c := t.logger.Check(zap.InfoLevel, "Can't find requested LastEventID"); c != nil {
-					c.Write(zap.String("LastEventID", s.RequestLastEventID))
-				}
-
-				s.HistoryDispatched(t.lastEventID)
-				return nil
-			}
 		}
 
 		responseLastEventID := EarliestLastEventID
@@ -319,17 +321,46 @@ func (t *BoltTransport) cleanup(bucket *bolt.Bucket, lastID uint64) error {
 	return nil
 }
 
+type cursorError uint
+
+const (
+	ErrNoData cursorError = 1 + iota
+	ErrIDNotFound
+)
+
+func (e cursorError) Error() string {
+	switch e {
+	case ErrNoData:
+		return "cursor: no data"
+	case ErrIDNotFound:
+		return "cursor: ID not found"
+	}
+	return "cursor: unknown error"
+}
+
 func cursorSeek(tx *bolt.Tx, bucketName string, s *Subscriber) (c *bolt.Cursor, err error) {
 	b := tx.Bucket([]byte(bucketName))
 	if b == nil {
-		return nil, fmt.Errorf("no data in bucket %s", bucketName)
+		err = ErrNoData
+		return
 	}
 
 	c = b.Cursor()
-	for k, _ := c.First(); k != nil && string(k[8:]) != s.RequestLastEventID; k, _ = c.Next() {
+	if s.RequestLastEventID == EarliestLastEventID {
+		return
 	}
-	return
 
+	k, _ := c.First()
+	for k != nil && string(k[8:]) != s.RequestLastEventID {
+		k, _ = c.Next()
+	}
+
+	if k == nil {
+		err = ErrIDNotFound
+		return
+	}
+
+	return
 }
 
 // Interface guards.
