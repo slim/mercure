@@ -145,6 +145,11 @@ func (t *BoltTransport) persist(update *Update) error {
 			return fmt.Errorf("error when creating Bolt DB bucket: %w", err)
 		}
 
+		index, err := tx.CreateBucketIfNotExists([]byte(t.bucketName + "_index"))
+		if err != nil {
+			return fmt.Errorf("error when creating Bolt DB index bucket: %w", err)
+		}
+
 		seq, err := bucket.NextSequence()
 		if err != nil {
 			return fmt.Errorf("error when generating Bolt DB sequence: %w", err)
@@ -160,6 +165,9 @@ func (t *BoltTransport) persist(update *Update) error {
 
 		t.lastSeq = seq
 		t.lastEventID = update.ID
+		if err := index.Put([]byte(update.ID), key); err != nil {
+			return fmt.Errorf("unable to put index in Bolt DB: %w", err)
+		}
 		if err := bucket.Put(key, updateJSON); err != nil {
 			return fmt.Errorf("unable to put value in Bolt DB: %w", err)
 		}
@@ -217,7 +225,6 @@ func (t *BoltTransport) GetSubscribers() (string, []*Subscriber, error) {
 	return t.lastEventID, getSubscribers(t.subscribers), nil
 }
 
-//nolint:gocognit
 func (t *BoltTransport) dispatchHistory(s *Subscriber, toSeq uint64) {
 	t.db.View(func(tx *bolt.Tx) error {
 		c, err := cursorSeek(tx, t.bucketName, s)
@@ -348,6 +355,16 @@ func cursorSeek(tx *bolt.Tx, bucketName string, s *Subscriber) (c *bolt.Cursor, 
 	c = b.Cursor()
 	if s.RequestLastEventID == EarliestLastEventID {
 		return
+	}
+
+	i := tx.Bucket([]byte(bucketName + "_index"))
+	if i != nil {
+		ci := i.Cursor()
+		k, v := ci.Seek([]byte(s.RequestLastEventID))
+		if k != nil {
+			c.Seek(v)
+			return
+		}
 	}
 
 	k, _ := c.First()
