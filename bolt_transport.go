@@ -359,9 +359,8 @@ func cursorSeek(tx *bolt.Tx, bucketName string, s *Subscriber) (c *bolt.Cursor, 
 
 	i := tx.Bucket([]byte(bucketName + "_index"))
 	if i != nil {
-		ci := i.Cursor()
-		k, v := ci.Seek([]byte(s.RequestLastEventID))
-		if k != nil {
+		v := i.Get([]byte(s.RequestLastEventID))
+		if v != nil {
 			c.Seek(v)
 			return
 		}
