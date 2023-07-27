@@ -172,7 +172,7 @@ func (t *BoltTransport) persist(update *Update) error {
 			return fmt.Errorf("unable to put value in Bolt DB: %w", err)
 		}
 
-		return t.cleanup(bucket, seq)
+		return t.cleanup(bucket)
 	}); err != nil {
 		return fmt.Errorf("bolt error: %w", err)
 	}
@@ -190,11 +190,10 @@ func (t *BoltTransport) AddSubscriber(s *Subscriber) error {
 
 	t.Lock()
 	t.subscribers.Add(s)
-	toSeq := t.lastSeq //nolint:ifshort
 	t.Unlock()
 
 	if s.RequestLastEventID != "" {
-		t.dispatchHistory(s, toSeq)
+		t.dispatchHistory(s)
 	}
 
 	s.Ready()
@@ -225,7 +224,7 @@ func (t *BoltTransport) GetSubscribers() (string, []*Subscriber, error) {
 	return t.lastEventID, getSubscribers(t.subscribers), nil
 }
 
-func (t *BoltTransport) dispatchHistory(s *Subscriber, toSeq uint64) {
+func (t *BoltTransport) dispatchHistory(s *Subscriber) {
 	t.db.View(func(tx *bolt.Tx) error {
 		c, err := cursorSeek(tx, t.bucketName, s)
 		if err != nil {
@@ -267,7 +266,7 @@ func (t *BoltTransport) dispatchHistory(s *Subscriber, toSeq uint64) {
 				return fmt.Errorf("unable to unmarshal update: %w", err)
 			}
 
-			if (s.Match(update) && !s.Dispatch(update, true)) || (toSeq > 0 && binary.BigEndian.Uint64(k[:8]) >= toSeq) {
+			if (s.Match(update) && !s.Dispatch(update, true)) || (t.lastSeq > 0 && binary.BigEndian.Uint64(k[:8]) >= t.lastSeq) {
 				s.HistoryDispatched(responseLastEventID)
 
 				return nil
@@ -305,15 +304,15 @@ func (t *BoltTransport) Close() (err error) {
 }
 
 // cleanup removes entries in the history above the size limit, triggered probabilistically.
-func (t *BoltTransport) cleanup(bucket *bolt.Bucket, lastID uint64) error {
+func (t *BoltTransport) cleanup(bucket *bolt.Bucket) error {
 	if t.size == 0 ||
 		t.cleanupFrequency == 0 ||
-		t.size >= lastID ||
+		t.size >= t.lastSeq ||
 		(t.cleanupFrequency != 1 && rand.Float64() < t.cleanupFrequency) { //nolint:gosec
 		return nil
 	}
 
-	removeUntil := lastID - t.size
+	removeUntil := t.lastSeq - t.size
 	c := bucket.Cursor()
 	for k, _ := c.First(); k != nil; k, _ = c.Next() {
 		if binary.BigEndian.Uint64(k[:8]) > removeUntil {
